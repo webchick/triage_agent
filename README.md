@@ -176,8 +176,8 @@ See [CLAUDE.md](CLAUDE.md) for architecture details and [HANDOFF.md](HANDOFF.md)
 - [x] Real GitHub comment + merge via PAT
 - [x] Graceful degradation (zero-key dry run)
 - [ ] Socket.dev integration
-- [ ] Package diff activity (sdist download + diff)
-- [ ] Per-repo config fetched from `.github/triage-agent.yml`
+- [x] Package diff activity (sdist download + diff)
+- [x] Per-repo config fetched from `.github/triage-agent.yml`
 - [ ] GitHub App auth (replaces PAT)
 - [ ] FastAPI webhook receiver (live on real Dependabot events)
 - [ ] Replay test fixtures
