@@ -1,10 +1,16 @@
 """
-FastAPI webhook receiver. Verifies HMAC signature, filters to Dependabot/Renovate PRs,
-parses the package info, and starts PRActionWorkflow.
+FastAPI webhook receiver for GitHub pull_request events.
+
+Verifies HMAC-SHA256 signature, filters to Dependabot/Renovate PRs,
+parses package + version from PR title/body, and starts PRActionWorkflow.
+Returns 200 immediately — workflow execution is asynchronous.
 """
 import hashlib
 import hmac
+import json
 import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException, Request
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
@@ -13,30 +19,38 @@ from activities.models import PRContext
 from helpers.pr_parser import parse_pr
 from workflows.pr_action_workflow import PRActionWorkflow
 
-app = FastAPI()
-
 _BOT_LOGINS = {"dependabot[bot]", "renovate[bot]"}
 _PR_ACTIONS = {"opened", "synchronize", "reopened"}
 
 _temporal_client: Client | None = None
 
 
-async def get_client() -> Client:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global _temporal_client
-    if _temporal_client is None:
-        _temporal_client = await Client.connect(
-            os.environ.get("TEMPORAL_ADDRESS", "localhost:7233"),
-            namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"),
-            data_converter=pydantic_data_converter,
-        )
-    return _temporal_client
+    _temporal_client = await Client.connect(
+        os.environ.get("TEMPORAL_ADDRESS", "localhost:7233"),
+        namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"),
+        data_converter=pydantic_data_converter,
+    )
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def _verify_signature(body: bytes, signature: str) -> None:
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="GITHUB_WEBHOOK_SECRET not configured")
     expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    return {"status": "ok", "temporal_connected": _temporal_client is not None}
 
 
 @app.post("/webhook")
@@ -51,7 +65,8 @@ async def webhook(
     if x_github_event != "pull_request":
         return {"status": "ignored", "reason": "not a pull_request event"}
 
-    payload = await request.json()
+    payload = json.loads(body)
+
     action = payload.get("action")
     if action not in _PR_ACTIONS:
         return {"status": "ignored", "reason": f"action={action}"}
@@ -64,7 +79,7 @@ async def webhook(
     body_text = payload["pull_request"].get("body") or ""
     parsed = parse_pr(title, body_text)
     if not parsed:
-        return {"status": "ignored", "reason": "could not parse package/version from PR"}
+        return {"status": "ignored", "reason": "could not parse package/version from PR title"}
 
     installation_id = payload.get("installation", {}).get("id", 0)
     repo = payload["repository"]["full_name"]
@@ -81,9 +96,8 @@ async def webhook(
         new_version=parsed.new_version,
     )
 
-    client = await get_client()
     workflow_id = f"pr-action-{repo.replace('/', '-')}-{pr_number}"
-    await client.start_workflow(
+    await _temporal_client.start_workflow(
         PRActionWorkflow.run,
         pr_context,
         id=workflow_id,

@@ -154,6 +154,32 @@ This problem is a natural fit for Temporal and the implementation makes that vis
 
 ---
 
+## Running the webhook receiver
+
+To receive live GitHub events locally, run the FastAPI server alongside the worker and expose it with [ngrok](https://ngrok.com):
+
+```bash
+# Terminal 1 — Temporal dev server
+temporal server start-dev
+
+# Terminal 2 — worker
+uv run python -m worker
+
+# Terminal 3 — webhook receiver
+uv run uvicorn api.webhook:app --port 8080
+
+# Terminal 4 — expose to GitHub
+ngrok http 8080
+```
+
+Then in your GitHub repo settings → Webhooks:
+- **Payload URL**: `https://<your-ngrok-id>.ngrok.io/webhook`
+- **Content type**: `application/json`
+- **Secret**: value of `GITHUB_WEBHOOK_SECRET` in your `.env`
+- **Events**: select *Pull requests* only
+
+---
+
 ## Development
 
 ```bash
@@ -179,7 +205,7 @@ See [CLAUDE.md](CLAUDE.md) for architecture details and [HANDOFF.md](HANDOFF.md)
 - [x] Package diff activity (sdist download + diff)
 - [x] Per-repo config fetched from `.github/triage-agent.yml`
 - [ ] GitHub App auth (replaces PAT)
-- [ ] FastAPI webhook receiver (live on real Dependabot events)
+- [x] FastAPI webhook receiver (live on real Dependabot events)
 - [ ] Replay test fixtures
 - [ ] Public deployment + GitHub App registration
 
