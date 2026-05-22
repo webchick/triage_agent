@@ -206,7 +206,7 @@ See [CLAUDE.md](CLAUDE.md) for architecture details and [HANDOFF.md](HANDOFF.md)
 - [x] Per-repo config fetched from `.github/triage-agent.yml`
 - [x] GitHub App auth (replaces PAT)
 - [x] FastAPI webhook receiver (live on real Dependabot events)
-- [ ] Replay test fixtures
+- [x] Replay test fixtures
 - [ ] Public deployment + GitHub App registration
 
 ---

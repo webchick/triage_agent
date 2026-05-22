@@ -111,12 +111,14 @@ uv run pytest tests/test_workflow_replay.py -v
 
 ### Key Testing Patterns
 
-**Replay tests** are the headline feature—Temporal's superpower for AI workflows. Record execution histories for:
-- GREEN auto-merge path
-- YELLOW human-approved
-- YELLOW human-rejected
-- RED block (with repo config enforcement)
-- Observe-only mode (defaults)
+**Replay tests** (`tests/test_workflow_replay.py`) load committed JSON fixtures from `tests/fixtures/` and replay them through `Replayer` to verify workflow determinism. A replay failure means a non-deterministic change was introduced — the kind of bug that corrupts live workflow state mid-execution.
+
+To regenerate fixtures after an intentional workflow change:
+```bash
+uv run python tests/generate_fixtures.py
+```
+
+Fixtures cover: GREEN auto-merge, YELLOW human-approved, YELLOW human-rejected, RED blocked, and observe-only.
 
 Activity unit tests mock HTTP via `respx`. The `pr_parser` has a corpus of real Dependabot/Renovate PR titles/bodies. Comment formatter is snapshot-tested.
 

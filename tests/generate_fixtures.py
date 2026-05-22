@@ -1,0 +1,237 @@
+"""
+Generate Temporal workflow history fixtures for replay tests.
+
+Run once to (re)generate committed JSON fixtures:
+    uv run python tests/generate_fixtures.py
+
+The resulting files in tests/fixtures/ are committed and consumed by
+tests/test_workflow_replay.py to verify workflow determinism.
+"""
+import asyncio
+import json
+from pathlib import Path
+
+from temporalio import activity
+from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import Worker
+
+from activities.models import (
+    DiffSignals,
+    MaintainerSignals,
+    OSVSignals,
+    PRContext,
+    PyPISignals,
+    ReleaseAgeSignals,
+    RepoConfig,
+    SocketSignals,
+    Verdict,
+)
+from workflows.package_triage_workflow import PackageTriageWorkflow
+from workflows.pr_action_workflow import PRActionWorkflow
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+_PR = PRContext(
+    repo="example/repo",
+    pr_number=42,
+    pr_author="dependabot[bot]",
+    installation_id=0,
+    ecosystem="pip",
+    package_name="requests",
+    old_version="2.28.0",
+    new_version="2.31.0",
+)
+
+
+# ---------------------------------------------------------------------------
+# Mock activity factories — each call produces a fresh function so that
+# multiple Workers in the same process don't share function objects.
+# ---------------------------------------------------------------------------
+
+
+def _pypi(is_major: bool = False):
+    @activity.defn(name="activities.pypi_metadata.fetch")
+    async def fetch(*_):
+        return PyPISignals(weekly_downloads=5_000_000, publish_account_age_days=3000, is_major_bump=is_major)
+    return fetch
+
+
+def _socket():
+    @activity.defn(name="activities.socket.score")
+    async def score(*_):
+        return SocketSignals(socket_score=80, socket_alerts=[])
+    return score
+
+
+def _osv(has_cve: bool = False):
+    @activity.defn(name="activities.osv.check")
+    async def check(*_):
+        return OSVSignals(osv_vulnerabilities=["CVE-2024-9999"] if has_cve else [])
+    return check
+
+
+def _diff():
+    @activity.defn(name="activities.package_diff.compute")
+    async def compute(*_):
+        return DiffSignals(diff_summary="Minor doc changes.", diff_size_bytes=256)
+    return compute
+
+
+def _maintainer(changed: bool = False):
+    @activity.defn(name="activities.maintainer.history")
+    async def history(*_):
+        return MaintainerSignals(maintainer_changed=changed)
+    return history
+
+
+def _release_age(hours: float = 720.0):
+    @activity.defn(name="activities.release_age.check")
+    async def check(*_):
+        return ReleaseAgeSignals(release_age_hours=hours)
+    return check
+
+
+def _classifier(classification: str):
+    @activity.defn(name="activities.classifier.classify")
+    async def classify(*_):
+        return Verdict(
+            classification=classification,
+            confidence=0.95,
+            reasoning=f"fixture:{classification}",
+            flags=[],
+        )
+    return classify
+
+
+def _repo_config(config: RepoConfig):
+    @activity.defn(name="activities.repo_config.fetch")
+    async def fetch(*_):
+        return config
+    return fetch
+
+
+def _comment():
+    @activity.defn(name="activities.github.comment")
+    async def comment(*_): pass
+    return comment
+
+
+def _merge():
+    @activity.defn(name="activities.github.merge_pr")
+    async def merge_pr(*_): pass
+    return merge_pr
+
+
+def _review():
+    @activity.defn(name="activities.github.request_review")
+    async def request_review(*_): pass
+    return request_review
+
+
+def _label():
+    @activity.defn(name="activities.github.label")
+    async def label(*_): pass
+    return label
+
+
+# ---------------------------------------------------------------------------
+# Scenarios: (fixture_name, verdict_class, repo_config, human_signal | None)
+# ---------------------------------------------------------------------------
+
+SCENARIOS = [
+    (
+        "green_automerge",
+        "green",
+        RepoConfig(auto_merge_enabled=True, auto_merge_classifications=["green"]),
+        None,
+    ),
+    (
+        "yellow_human_approved",
+        "yellow",
+        RepoConfig(reviewers=["alice"]),
+        "approve",
+    ),
+    (
+        "yellow_human_rejected",
+        "yellow",
+        RepoConfig(reviewers=["alice"]),
+        "reject",
+    ),
+    (
+        "red_blocked",
+        "red",
+        RepoConfig(block_classifications=["red"]),
+        None,
+    ),
+    (
+        "observe_only",
+        "green",
+        RepoConfig(),
+        None,
+    ),
+]
+
+
+async def _run_scenario(
+    env: WorkflowEnvironment,
+    name: str,
+    classification: str,
+    config: RepoConfig,
+    human_signal: str | None,
+) -> None:
+    acts = [
+        _pypi(), _socket(), _osv(), _diff(), _maintainer(), _release_age(),
+        _classifier(classification), _repo_config(config),
+        _comment(), _merge(), _review(), _label(),
+    ]
+    async with Worker(
+        env.client,
+        task_queue="gen-fixtures",
+        workflows=[PRActionWorkflow, PackageTriageWorkflow],
+        activities=acts,
+    ):
+        handle = await env.client.start_workflow(
+            PRActionWorkflow.run,
+            _PR,
+            id=f"fix-{name}",
+            task_queue="gen-fixtures",
+        )
+
+        if human_signal is not None:
+            # Send the signal immediately — Temporal buffers it on the server
+            # and delivers it to the workflow task when it next executes.
+            # By the time the workflow reaches wait_condition, the signal
+            # handler has already set _human_decision, so the condition is
+            # satisfied instantly. This avoids races with the time-skipping
+            # server, which advances time whenever a workflow is parked at a
+            # wait point and would otherwise trigger an execution timeout.
+            await handle.signal(PRActionWorkflow.submit_decision, human_signal)
+        await handle.result()
+
+        history = await handle.fetch_history()
+        path = FIXTURES_DIR / f"pr_action_{name}.json"
+        path.write_text(
+            json.dumps(
+                {"workflowId": f"fix-{name}", "history": json.loads(history.to_json())},
+                indent=2,
+            )
+        )
+        print(f"  wrote {path.name}")
+
+
+async def main() -> None:
+    FIXTURES_DIR.mkdir(exist_ok=True)
+    for name, classification, config, human_signal in SCENARIOS:
+        print(f"generating {name}...")
+        # Each scenario gets its own isolated environment so workflow IDs
+        # and task queues never collide.
+        async with await WorkflowEnvironment.start_time_skipping(
+            data_converter=pydantic_data_converter
+        ) as env:
+            await _run_scenario(env, name, classification, config, human_signal)
+    print("done — fixtures written to tests/fixtures/")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
