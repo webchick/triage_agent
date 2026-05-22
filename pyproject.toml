@@ -16,6 +16,7 @@ dependencies = [
     "PyJWT>=2.8.0",
     "cryptography>=42.0",
     "pyyaml>=6.0",
+    "packaging>=23.0",
 ]
 
 [build-system]

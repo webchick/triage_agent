@@ -41,7 +41,7 @@ def format_comment(pr: PRContext, verdict: Verdict, signals: PackageSignals | No
     ]
 
     if verdict.flags:
-        lines += ["**Flags:**", *[f"- {f}" for f in verdict.flags], ""]
+        lines += ["**Flags:**", *[f"- {_sanitize_reasoning(f)}" for f in verdict.flags], ""]
 
     if signals:
         lines += [

@@ -19,13 +19,18 @@ YELLOW — needs human eyes. ANY of:
   - Socket informational alerts
   - low download count (<1000/week)
   - missing signals (Socket unavailable, etc.)
+  - any new outbound network call added in the diff — legitimate config fetching
+    and C2 payload fetching look identical in source code; always requires human review
 
 RED — likely supply chain attack. ANY of:
+  - ANY entry in the "=== DANGEROUS BINARY/EXECUTABLE FILES ===" diff section —
+    new or modified .so/.pyd/.dll/.pkl files execute code on load; this is an
+    automatic RED regardless of all other signals
   - install scripts added or modified (setup.py, postinstall hooks)
   - obfuscated code, base64 blobs, hex-encoded strings
   - exec/eval on dynamic strings
-  - network calls to unexpected domains
-  - filesystem access to credentials paths (~/.npmrc, ~/.aws, etc.)
+  - new network call whose result is passed to exec/eval/pickle.loads
+  - filesystem access to credentials paths (~/.npmrc, ~/.aws, ~/.ssh, etc.)
   - recent maintainer takeover signal
   - Socket critical alerts
   - version <24h old with unusual diff content

@@ -43,6 +43,13 @@ HIGH_SIGNAL_NAMES = {
 }
 HIGH_SIGNAL_SUFFIXES = {".pth"}  # Python path config files — silent code-exec vector
 
+# Files that execute code on load / are impossible to text-diff safely.
+# A new or modified file with any of these extensions is an automatic RED signal.
+DANGEROUS_BINARY_SUFFIXES = {
+    ".so", ".pyd", ".dll",       # native compiled extensions — execute arbitrary code
+    ".pkl", ".pickle",            # deserializes and executes arbitrary Python objects
+}
+
 
 # ---------------------------------------------------------------------------
 # Activity entry point
@@ -260,10 +267,32 @@ def _build_diff(old_map: dict[str, Path], new_map: dict[str, Path]) -> str:
     new_files = sorted(new_keys - old_keys)
     changed = sorted(old_keys & new_keys)
 
+    # Dangerous binary files — new or modified — separated before any text analysis.
+    dangerous_new: list[str] = []
+    dangerous_changed: list[str] = []
+    regular_new_files: list[str] = []
+
+    for rel in new_files:
+        if Path(rel).suffix.lower() in DANGEROUS_BINARY_SUFFIXES:
+            dangerous_new.append(rel)
+        else:
+            regular_new_files.append(f"+ {rel}")
+
     high_signal_changed: list[tuple[str, str]] = []
     other_changed: list[str] = []
 
     for rel in changed:
+        suffix = Path(rel).suffix.lower()
+        if suffix in DANGEROUS_BINARY_SUFFIXES:
+            # Can't text-diff — compare by SHA256 to detect modification
+            old_hash = hashlib.sha256(old_map[rel].read_bytes()).hexdigest()
+            new_hash = hashlib.sha256(new_map[rel].read_bytes()).hexdigest()
+            if old_hash != new_hash:
+                old_sz = old_map[rel].stat().st_size
+                new_sz = new_map[rel].stat().st_size
+                dangerous_changed.append(f"{rel} ({old_sz}→{new_sz} bytes)")
+            continue
+
         old_text = _read_text(old_map[rel])
         new_text = _read_text(new_map[rel])
         if old_text == new_text:
@@ -275,15 +304,23 @@ def _build_diff(old_map: dict[str, Path], new_map: dict[str, Path]) -> str:
         else:
             other_changed.append(rel)
 
-    # New files — treat all as high-signal
-    new_file_lines: list[str] = []
-    for rel in new_files:
-        new_file_lines.append(f"+ {rel}")
-
     sections: list[str] = []
 
-    if new_file_lines:
-        sections.append("=== NEW FILES ===\n" + "\n".join(new_file_lines))
+    # Dangerous binary section always appears first — makes it impossible to miss.
+    if dangerous_new or dangerous_changed:
+        lines: list[str] = []
+        for rel in dangerous_new:
+            lines.append(f"NEW: {rel}")
+        for entry in dangerous_changed:
+            lines.append(f"MODIFIED: {entry}")
+        sections.append(
+            "=== DANGEROUS BINARY/EXECUTABLE FILES ===\n"
+            "(compiled extensions and pickle files execute code on load — automatic RED signal)\n"
+            + "\n".join(lines)
+        )
+
+    if regular_new_files:
+        sections.append("=== NEW FILES ===\n" + "\n".join(regular_new_files))
 
     if high_signal_changed:
         parts = []

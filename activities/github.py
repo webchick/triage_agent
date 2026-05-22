@@ -135,8 +135,12 @@ async def label(pr: PRContext, label_name: str) -> None:
 
 
 @activity.defn(name="activities.github.close_pr")
-async def close_pr(pr: PRContext, reason: str) -> None:
+async def close_pr(pr: PRContext, reason: str, ignore_dependabot: bool = False) -> None:
     body = f"**Dependabot Triage Agent — closing this PR.**\n\n{reason}"
+    if ignore_dependabot:
+        # Tell Dependabot to stop reopening this. The magic phrase is processed
+        # by Dependabot when posted as a PR comment by a user with write access.
+        body += "\n\n@dependabot ignore this dependency"
     if _dry_run():
         activity.logger.info(f"[dry-run] Would close {pr.repo}#{pr.pr_number}: {reason}")
         return

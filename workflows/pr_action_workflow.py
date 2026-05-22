@@ -52,10 +52,14 @@ class PRActionWorkflow:
         )
 
         # Cross-repo dedup: multiple repos seeing the same bump share one PackageTriageWorkflow.
+        # The date suffix provides a 24-hour TTL — each UTC day produces a fresh verdict,
+        # so a stale GREEN from yesterday cannot persist indefinitely. Within a day, all
+        # repos seeing the same bump still share one triage run.
+        date_key = workflow.now().strftime("%Y-%m-%d")
         verdict: Verdict = await workflow.execute_child_workflow(
             PackageTriageWorkflow.run,
             args=[pr.ecosystem, pr.package_name, pr.old_version, pr.new_version],
-            id=f"triage-{pr.ecosystem}-{pr.package_name}-{pr.new_version}",
+            id=f"triage-{pr.ecosystem}-{pr.package_name}-{pr.new_version}-{date_key}",
             parent_close_policy=ParentClosePolicy.ABANDON,
             result_type=Verdict,
         )
@@ -89,7 +93,7 @@ class PRActionWorkflow:
                 f"Reason: {', '.join(verdict.flags) or verdict.reasoning[:200]}"
             )
             await workflow.execute_activity(
-                "activities.github.close_pr", args=[pr, reason], **opts
+                "activities.github.close_pr", args=[pr, reason, True], **opts
             )
             return f"blocked-{verdict.classification}"
 
